@@ -49,9 +49,19 @@ impl Node {
                 children.push(Node::scan(entry.path())?);
             }
 
+            children.sort_by(|a, b| {
+                match (a.is_dir(), b.is_dir()) {
+                    (true, false) => std::cmp::Ordering::Less,    // a是目录，b是文件 -> a排前
+                    (false, true) => std::cmp::Ordering::Greater, // a是文件，b是目录 -> b排前
+                    _ => a.path.cmp(&b.path),                     // 同类按路径名排序
+                }
+            });
+
+            let total_size: u64 = children.iter().map(|c| c.size).sum();
+
             Ok(Node {
                 path,
-                size: meta.len(),
+                size: total_size,
                 kind: NodeKind::Directory(DirProperty {
                     children,
                     expanded: false,
@@ -66,9 +76,23 @@ impl Node {
         }
     }
 
-    pub fn expand(&mut self) {
+    pub fn is_expanded(&self) -> bool {
+        match &self.kind {
+            NodeKind::Directory(dir) => dir.expanded,
+            _ => false,
+        }
+    }
+
+    pub fn toggle(&mut self) {
         if let NodeKind::Directory(dir) = &mut self.kind {
             dir.expanded = !dir.expanded;
+        }
+    }
+
+    pub fn children_mut(&mut self) -> Option<&mut [Node]> {
+        match &mut self.kind {
+            NodeKind::Directory(dir) => Some(&mut dir.children),
+            _ => None,
         }
     }
 }
