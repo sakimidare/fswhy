@@ -6,6 +6,8 @@
 
 use crate::model::NodeKind::*;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::Instant;
 
 /// A single entity in the file system tree (either a file or a directory).
 ///
@@ -56,29 +58,104 @@ impl Node {
     /// based on a specific priority:
     /// 1. Directories come before files.
     /// 2. Entries of the same type are sorted alphabetically by path.
+    /// Progress is displayed to stderr during scanning:
+    /// - Shows progress every 100 items scanned
+    /// - Displays detailed statistics for top-level directories
     ///
     /// # Errors
     /// Returns an error if the path does not exist or if permissions are
     /// insufficient to read the directory.
     pub fn scan(path: PathBuf) -> anyhow::Result<Node> {
+        // 全局计数器，跨所有层级统计
+        static TOTAL_COUNT: AtomicUsize = AtomicUsize::new(0);
+        TOTAL_COUNT.store(0, Ordering::Relaxed);
+
+        eprintln!("Scanning {}...", path.display());
+        let result = Self::scan_with_progress(path, 0, &TOTAL_COUNT);
+        eprintln!();
+        result
+    }
+
+    /// Internal recursive scan implementation with progress tracking.
+    ///
+    /// This method is called by [`scan`](Self::scan) and recursively builds
+    /// the directory tree while updating a global atomic counter for progress
+    /// display.
+    ///
+    /// # Arguments
+    /// * `path` - The filesystem path to scan
+    /// * `depth` - Current recursion depth (0 for root)
+    /// * `total_count` - Shared atomic counter for tracking total scanned items
+    ///
+    /// # Progress Display
+    /// - Shows incremental progress every 100 items to stderr
+    /// - Displays detailed statistics (dir/file count, size, time) for directories
+    ///   at depth 0 or 1 to avoid excessive output
+    ///
+    /// # Error Handling
+    /// - Skips inaccessible entries and continues scanning
+    /// - Logs errors to stderr only for top-level entries (depth ≤ 1)
+    fn scan_with_progress(
+        path: PathBuf,
+        depth: usize,
+        total_count: &AtomicUsize,
+    ) -> anyhow::Result<Node> {
+        let start = Instant::now();
         let meta = std::fs::metadata(&path)?;
 
         if meta.is_dir() {
             let mut children = Vec::new();
+            let mut file_count = 0;
+            let mut dir_count = 0;
+
             for entry in std::fs::read_dir(&path)? {
                 let entry = entry?;
-                children.push(Node::scan(entry.path())?);
+                let child_path = entry.path();
+
+                match Self::scan_with_progress(child_path, depth + 1, total_count) {
+                    Ok(child) => {
+                        match child.kind() {
+                            File => file_count += 1,
+                            Directory(_) => dir_count += 1,
+                        }
+                        children.push(child);
+
+                        let count = total_count.fetch_add(1, Ordering::Relaxed) + 1;
+
+                        if count % 100 == 0 {
+                            eprint!("\rScanned {} items...", count);
+                            std::io::Write::flush(&mut std::io::stderr()).ok();
+                        }
+                    }
+                    Err(e) => {
+                        if depth <= 1 {
+                            eprintln!("\n✗ Skipped: {}", e);
+                        }
+                    }
+                }
             }
 
             children.sort_by(|a, b| {
                 match (&a.kind, &b.kind) {
-                    (Directory(_), File) => std::cmp::Ordering::Less, // a是目录，b是文件 -> a排前
-                    (File, Directory(_)) => std::cmp::Ordering::Greater, // a是文件，b是目录 -> b排前
-                    _ => a.path.cmp(&b.path),                            // 同类按路径名排序
+                    (Directory(_), File) => std::cmp::Ordering::Less,
+                    (File, Directory(_)) => std::cmp::Ordering::Greater,
+                    _ => a.path.cmp(&b.path),
                 }
             });
 
             let total_size: u64 = children.iter().map(|c| c.size).sum();
+
+            if depth <= 1 {
+                eprintln!(
+                    "\n✓ {} ({} dirs, {} files, {:.1} MB) in {:.2}s",
+                    path.display(),
+                    dir_count,
+                    file_count,
+                    total_size as f64 / 1024.0 / 1024.0,
+                    start.elapsed().as_secs_f64(),
+                );
+            }
+
             Ok(Node {
                 path,
                 size: total_size,

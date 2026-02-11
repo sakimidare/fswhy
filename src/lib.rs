@@ -60,7 +60,7 @@ impl App {
             match state.update(action) {
                 Ok(false) => break Ok(()),
                 Ok(true) => continue,
-                Err(e) => eprintln!("⚠️ {e}"),
+                Err(e) => eprintln!("⚠️{e}"),
             }
         }
     }
