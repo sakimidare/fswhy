@@ -48,21 +48,19 @@ impl App {
         let mut state = self.create_ui_state();
         loop {
             ui::render(&state);
-            match ui::get_input() {
-                Ok(input) => {
-                    let err = state.update(input);
-                    match err {
-                        Ok(again) => {
-                            if !again {
-                                break Ok(());
-                            }
-                        }
-                        Err(e) => eprintln!("Error: {e:?}"),
-                    }
-                }
+
+            let action = match ui::get_input() {
+                Ok(action) => action,
                 Err(e) => {
-                    eprintln!("Error: {e:?}");
+                    eprintln!("⚠️ Input error: {e}");
+                    continue;
                 }
+            };
+
+            match state.update(action) {
+                Ok(false) => break Ok(()),
+                Ok(true) => continue,
+                Err(e) => eprintln!("⚠️ {e}"),
             }
         }
     }
